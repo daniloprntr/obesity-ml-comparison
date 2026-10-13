@@ -48,3 +48,10 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+.positai
+
+# Downloaded datasets
+/data/*.csv
+
+# macOS
+.DS_Store

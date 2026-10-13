@@ -1,0 +1,360 @@
+---
+title: "Obesity Level Classification - Original ANN"
+author: "Danilo Prontera"
+output: html_document
+---
+#Project presentation
+
+
+
+#ANN model 
+
+Data : 
+```{r}
+data <- read.csv(
+  here::here("data", "ObesityDataSet_raw_and_data_sinthetic.csv"),
+  header = TRUE
+)
+```
+
+Configuration chunk :
+
+```{r}
+# Python / TensorFlow environment
+Sys.setenv(
+  RETICULATE_PYTHON = "managed",
+  TF_USE_LEGACY_KERAS = "1"
+)
+
+reticulate::py_require(
+  packages = c(
+    "tensorflow==2.16.2",
+    "tf-keras==2.16.0",
+    "numpy<2"
+  ),
+  python_version = "3.11"
+)
+```
+
+Packages : 
+```{r}
+#install.packages('caret')
+#install.packages('tidyverse')
+#install.packages('keras')
+#install.packages('tensorflow')
+
+library(tidyverse)
+library(caret)
+library(keras)
+library(tensorflow)
+```
+
+If TensorFlow is not already installed on your machine, run the following chunk once. TensorFlow is required to train the Artificial Neural Network backend used by Keras.
+
+```{r}
+# Run this chunk only if TensorFlow is not installed
+
+# install_tensorflow()
+```
+
+
+##Data structure/Dataset Overview : 
+The dataset contains demographic, eating habit, and physical condition variables used to classify obesity levels. Before training the ANN, the structure and quality of the dataset were inspected.
+
+```{r}
+dim(data)
+head(data)
+str(data)
+summary(data)
+```
+
+The dataset contains both numerical and categorical variables, requiring preprocessing before ANN training.
+
+```{r}
+sum(is.na(data))
+```
+
+No missing values were present in the dataset.
+
+##Data preprocessing for the ANN
+
+Categorical variables were converted into factors. The target variable was then separated from the predictors: `X` contains the explanatory variables and `y` contains the obesity class to predict.
+
+```{r}
+cat_cols <- c("Gender", "family_history_with_overweight", "FAVC",
+              "CAEC", "SMOKE", "SCC", "CALC", "MTRANS")
+
+data[cat_cols] <- lapply(data[cat_cols], factor)
+
+X <- data %>% select(-NObeyesdad)
+y <- data$NObeyesdad
+```
+
+The dataset was split into training and test sets using an 80/20 ratio. The test set was kept aside and used only for the final evaluation of the ANN.
+
+```{r}
+set.seed(2)
+
+trainIndex <- createDataPartition(y, p = 0.8, list = FALSE)
+
+X_train <- X[trainIndex, ]
+X_test  <- X[-trainIndex, ]
+
+y_train <- y[trainIndex]
+y_test  <- y[-trainIndex]
+```
+
+Since ANN models require numerical inputs, categorical predictors were transformed using one-hot encoding. Numerical features were then centered and scaled because neural networks are sensitive to feature scale.
+
+```{r}
+# One-hot encoding of predictors
+dummies <- dummyVars(~ ., data = X_train)
+
+X_train <- predict(dummies, newdata = X_train)
+X_test  <- predict(dummies, newdata = X_test)
+
+X_train <- as.data.frame(X_train)
+X_test  <- as.data.frame(X_test)
+
+# Scaling
+preproc <- preProcess(X_train, method = c("center", "scale"))
+
+X_train <- predict(preproc, X_train)
+X_test  <- predict(preproc, X_test)
+```
+
+The target variable was converted into numerical classes and then one-hot encoded. This format is required for multiclass classification with a Softmax output layer and categorical cross-entropy loss.
+
+```{r}
+# Convert target to factors
+y_train <- as.factor(y_train)
+y_test  <- as.factor(y_test)
+
+# Keep the same class levels in train and test
+y_test <- factor(y_test, levels = levels(y_train))
+
+# Convert classes to numbers: 0, 1, 2, ...
+y_train_num <- as.numeric(y_train) - 1
+y_test_num  <- as.numeric(y_test) - 1
+
+# One-hot encoding of the target
+y_train_cat <- keras::to_categorical(
+  y_train_num,
+  num_classes = length(levels(y_train))
+)
+
+y_test_cat <- keras::to_categorical(
+  y_test_num,
+  num_classes = length(levels(y_train))
+)
+
+# Convert data to matrices/arrays for Keras
+X_train_matrix <- as.matrix(X_train)
+X_test_matrix  <- as.matrix(X_test)
+
+y_train_cat <- as.array(y_train_cat)
+y_test_cat  <- as.array(y_test_cat)
+
+dim(y_train_cat)
+dim(y_test_cat)
+head(y_train_cat)
+```
+## Building the Artificial Neural Network (ANN)
+
+In this part, an Artificial Neural Network was built using the Keras and TensorFlow libraries.
+The goal of the model is to learn the relationship between eating habits, physical activity, and physical characteristics in order to predict the obesity category of an individual.
+
+The ANN used in this project is composed of:
+
+* an input layer receiving all preprocessed variables,
+* two hidden dense layers using the ReLU activation function,
+* and a final Softmax output layer adapted for multiclass classification.
+
+A relatively small architecture was chosen in order to reduce the risk of overfitting while still allowing the ANN to learn complex relationships in the data.
+
+```{r}
+# Reproducibility
+set.seed(2)
+tensorflow::tf$random$set_seed(2)
+
+# Number of input features and output classes
+n_features <- ncol(X_train_matrix)
+n_classes <- ncol(y_train_cat)
+
+# Build the ANN model
+model <- keras_model_sequential()
+model$add(layer_input(shape = n_features))
+model$add(layer_dense( units = 32, activation = "relu"))
+model$add(layer_dense(units = 16,activation = "relu"))
+model$add(layer_dense( units = n_classes,    activation = "softmax" ))
+
+# Display model architecture
+model$summary()
+```
+
+Configuring the ANN Training
+
+Before training the network, it is necessary to define:
+* the loss function,
+* the optimizer,
+* and the evaluation metric.
+
+Since this project is a multiclass classification problem, the categorical cross-entropy loss was used.
+The Adam optimizer was selected because it generally provides fast and stable convergence for neural networks. Accuracy was used as the main evaluation metric during training.
+
+```{r}
+model$compile(
+  loss = "categorical_crossentropy",
+  optimizer = "adam",
+  metrics = list("accuracy")
+)
+```
+
+Training the Model
+
+The ANN was trained on the training dataset for 100 epochs using batches of 32 observations.
+A validation subset was automatically extracted from the training set (20%) in order to monitor the evolution of the model during learning and identify possible overfitting.
+
+```{r}
+history <- model$fit(
+  x = X_train_matrix,
+  y = y_train_cat,
+  epochs = as.integer(100),
+  batch_size = as.integer(32),
+  validation_split = 0.2
+)
+```
+
+## Evaluating the ANN Performance
+
+After training the model, its performance was evaluated on the independent test set.
+This step is important because the test data were never used during training, allowing us to estimate how well the ANN generalizes to new unseen observations.
+
+The evaluation was performed using:
+
+* the test accuracy,
+* predicted class probabilities,
+* and a confusion matrix comparing predicted and true obesity classes.
+
+```{r}
+# Evaluate the model on the test set
+score <- model$evaluate(X_test_matrix, y_test_cat) ; score
+```
+
+The ANN achieved a test accuracy of approximately 91.9%, indicating that the model was able to correctly classify most individuals in the independent test set.
+
+The relatively low loss value also suggests that the predicted class probabilities were generally close to the true obesity categories.
+
+Overall, these results indicate that the ANN successfully learned meaningful relationships between lifestyle variables and obesity levels.
+
+Generating Predictions
+
+The ANN outputs probabilities for each obesity class.
+The class with the highest predicted probability was selected as the final prediction for each individual.
+```{r}
+# Predict probabilities for each class
+pred_prob <- model$predict(X_test_matrix)
+
+# Convert probabilities into predicted class indices
+pred_class_num <- max.col(pred_prob) - 1
+
+# Recover class names
+class_names <- levels(y_train)
+
+# Convert predictions into factors
+pred_class <- factor(
+  class_names[pred_class_num + 1],
+  levels = class_names
+)
+
+# True classes
+true_class <- factor(
+  y_test,
+  levels = class_names
+)
+```
+
+Confusion Matrix
+
+Finally, a confusion matrix was computed in order to visualize the classification performance of the ANN for each obesity category.
+This matrix allows us to identify:
+* correctly classified observations,
+* misclassified categories,
+* and obesity classes that are more difficult for the ANN to distinguish.
+
+```{r}
+confusionMatrix(pred_class, true_class)
+```
+
+Most obesity categories were classified correctly, especially Obesity Type III, which achieved very high sensitivity and specificity values.
+
+Most prediction errors occurred between neighboring categories such as:
+
+- Normal Weight and Overweight Level I/Insufficient Weight,
+- Overweight Level I and Overweight Level II,
+- or Obesity Type I and Obesity Type II.
+
+This behavior is expected since adjacent obesity classes often share similar physical and lifestyle characteristics.
+A few less expected misclassifications were also observed. This may reflect the complexity and variability of individual lifestyle and physical condition profiles.
+
+## Training vs Validation Loss
+
+```{r}
+plot(
+  history$history$loss,
+  type = "l",
+  col = "blue",
+  lwd = 2,
+  xlab = "Epoch",
+  ylab = "Loss",
+  main = "Training vs Validation Loss"
+)
+
+lines(
+  history$history$val_loss,
+  col = "red",
+  lwd = 2
+)
+
+legend(
+  "topright",
+  legend = c("Train Loss", "Validation Loss"),
+  col = c("blue", "red"),
+  lwd = 2
+)  
+```
+
+The training and validation loss curves decreased progressively throughout training and remained close to each other. This suggests that the ANN converged properly and did not exhibit severe overfitting. 
+
+## Testing an another ANN achitecture
+
+To investigate the influence of ANN architecture on performance, a second simpler model using only one hidden layer with 16 neurons was also tested.
+
+```{r}
+model2 <- keras_model_sequential()
+
+model2$add(layer_input(shape = n_features))
+
+model2$add(layer_dense(units = 16,activation = "relu"))
+
+model2$add(layer_dense(units = n_classes,activation = "softmax"))
+
+model2$compile(loss = "categorical_crossentropy", optimizer = "adam", metrics = list("accuracy"))
+
+history2 <- model2$fit(x = X_train_matrix, y = y_train_cat,
+  epochs = as.integer(100),
+  batch_size = as.integer(32),
+  validation_split = 0.2,
+  verbose = 0
+)
+
+score2 <- model2$evaluate(
+  X_test_matrix,
+  y_test_cat,
+  verbose = 0
+)
+
+score2
+```
+
+Both architectures produced similar results, suggesting that the dataset can already be classified efficiently using a relatively simple ANN.
